@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nest Hub mic diagnostic V3</title>
+  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px 24px; color: #edf5ff; background: #0b1220; font: 17px/1.22 sans-serif; }
+    h1 { margin: 0 0 8px; color: #45c7ff; font-size: 28px; }
+    #status { margin: 0 0 10px; font-size: 24px; font-weight: 700; }
+    .ok { color: #61e6a2; } .bad { color: #ff8fa3; } .wait { color: #ffd166; }
+    dl { display: grid; grid-template-columns: 190px 1fr; gap: 4px 12px; margin: 0; }
+    dt { color: #9fb5cf; } dd { margin: 0; overflow-wrap: anywhere; }
+    #retry { margin-top: 12px; padding: 9px 18px; border: 0; border-radius: 8px; font-size: 17px; }
+  </style>
+</head>
+<body>
+  <h1>MIC DIAG — BUILD V3</h1>
+  <p id="status" class="wait">Test en cours…</p>
+  <dl id="results"></dl>
+  <button id="retry" type="button">Retester en touchant l’écran</button>
+  <script>
+    const BUILD = 'V3-20261022-01';
+    const statusNode = document.querySelector('#status');
+    const resultsNode = document.querySelector('#results');
+    const rows = new Map();
+    let running = false;
+
+    function setRow(name, value) {
+      rows.set(name, String(value));
+      resultsNode.replaceChildren(...[...rows].flatMap(([key, val]) => {
+        const dt = document.createElement('dt');
+        const dd = document.createElement('dd');
+        dt.textContent = key;
+        dd.textContent = val;
+        return [dt, dd];
+      }));
+    }
+
+    function errorText(error) {
+      return `${error?.name || 'Error'}: ${error?.message || String(error)}`;
+    }
+
+    function legacyGetUserMedia() {
+      const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+      if (!legacy) return Promise.reject(new Error('API absente'));
+      return new Promise((resolve, reject) => legacy.call(navigator, { audio: true, video: false }, resolve, reject));
+    }
+
+    async function test() {
+      if (running) return;
+      running = true;
+      rows.clear();
+      statusNode.textContent = 'Test en cours…';
+      statusNode.className = 'wait';
+      setRow('BUILD', BUILD);
+      setRow('Contexte HTTPS', isSecureContext);
+      setRow('mediaDevices', !!navigator.mediaDevices);
+
+      let policy = 'API inconnue';
+      try {
+        const checker = document.permissionsPolicy || document.featurePolicy;
+        policy = checker?.allowsFeature ? checker.allowsFeature('microphone') : 'API absente';
+      } catch (error) {
+        policy = errorText(error);
+      }
+      setRow('Permissions-Policy', policy);
+
+      try {
+        const permission = await navigator.permissions.query({ name: 'microphone' });
+        setRow('Permission micro', permission.state);
+      } catch (error) {
+        setRow('Permission API', errorText(error));
+      }
+
+      let devices = [];
+      try {
+        devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
+        const inputs = devices.filter(device => device.kind === 'audioinput');
+        setRow('Entrées audio', `${inputs.length}; id=${inputs.map(d => d.deviceId || '(vide)').join(', ') || 'aucune'}`);
+      } catch (error) {
+        setRow('enumerateDevices', errorText(error));
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const tracks = stream.getAudioTracks();
+        setRow('getUserMedia moderne', `OK — ${tracks.length} piste(s)`);
+        statusNode.textContent = 'MICRO ACCESSIBLE';
+        statusNode.className = 'ok';
+        running = false;
+        return;
+      } catch (error) {
+        setRow('getUserMedia moderne', errorText(error));
+      }
+
+      try {
+        const stream = await legacyGetUserMedia();
+        setRow('getUserMedia ancien', `OK — ${stream.getAudioTracks().length} piste(s)`);
+        statusNode.textContent = 'MICRO ACCESSIBLE (API ANCIENNE)';
+        statusNode.className = 'ok';
+      } catch (error) {
+        setRow('getUserMedia ancien', errorText(error));
+        statusNode.textContent = 'MICRO BLOQUÉ PAR LE RUNTIME CAST';
+        statusNode.className = 'bad';
+      }
+      running = false;
+    }
+
+    document.querySelector('#retry').addEventListener('click', test);
+    setTimeout(test, 900);
+    try {
+      const context = cast.framework.CastReceiverContext.getInstance();
+      context.addEventListener(cast.framework.system.EventType.READY, test);
+      context.start({ disableIdleTimeout: true });
+    } catch (error) {
+      setRow('Cast SDK', errorText(error));
+    }
+  </script>
+</body>
+</html>
